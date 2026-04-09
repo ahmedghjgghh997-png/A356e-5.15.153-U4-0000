@@ -1,4 +1,4 @@
-name: Build A35 Kernel (Exynos) using local script
+name: Build A35 Kernel (Exynos) with KernelSU
 
 on:
   workflow_dispatch:
@@ -22,13 +22,14 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository (to get build_a35.sh)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies (for script)
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y git-all make gcc python-is-python3 build-essential openssl pip bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler libssl-dev libtinfo5
+          # إزالة git-all واستخدام git فقط لتجنب الحزم الإضافية
+          sudo apt install -y git make gcc python-is-python3 build-essential openssl pip bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler libssl-dev libtinfo5
           pip install gdown
 
       - name: Make script executable
@@ -40,9 +41,7 @@ jobs:
             --source-url "${{ github.event.inputs.source_url }}" \
             --boot-url "${{ github.event.inputs.boot_img_url }}" \
             --permissive "${{ github.event.inputs.permissive }}" \
-            --zram-lz4 "${{ github.event.inputs.zram_lz4 == 'true' && '--zram-lz4' || '' }}" \
-            --push-github ""   # لا نريد دفع GitHub من Actions هنا
-        continue-on-error: false
+            ${{ github.event.inputs.zram_lz4 == 'true' && '--zram-lz4' || '' }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
