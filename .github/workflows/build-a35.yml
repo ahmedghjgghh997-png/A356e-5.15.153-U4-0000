@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          # إزالة git-all واستخدام git فقط لتجنب الحزم الإضافية
+          # تثبيت git فقط (بدون git-all) لتجنب الحزم الإضافية غير الضرورية
           sudo apt install -y git make gcc python-is-python3 build-essential openssl pip bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler libssl-dev libtinfo5
           pip install gdown
 
