@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # سكريبت بناء نواة Samsung Galaxy A35 (Exynos 1380) مع KernelSU
-# يطبق جميع خطوات دليل physwizz (1-33) مع تعطيل كامل للحماية
+# يعطل جميع حمايات سامسونج، يدعم AnyKernel3 أو boot.img مباشر
 # ============================================================
 set -e
 
@@ -69,15 +69,15 @@ done
 
 [ -z "$SOURCE_URL" ] && { echo -e "${RED}خطأ: يجب تحديد --source-url${NC}"; usage; }
 
-# ========== الخطوة 1-5: إعداد نظام لينكس وتبعيات ==========
+# ========== الخطوة 1-5: إعداد نظام لينكس وتبعيات (بدون git-all) ==========
 echo -e "${GREEN}[الخطوات 1-5] تثبيت التبعيات الأساسية...${NC}"
 sudo apt update
 sudo apt upgrade -y
-sudo apt-get install -y git-all make gcc
+# تم تعديل السطر التالي: استبدلنا git-all بـ git
+sudo apt install -y git make gcc
 sudo apt install -y python-is-python3 build-essential openssl pip
 pip install virtualenv
 sudo apt install -y python3-virtualenv
-# Python 2 (قد لا تحتاجه Exynos، لكنه موجود في الدليل)
 sudo add-apt-repository -y ppa:deadsnakes/ppa
 sudo apt update
 sudo apt install -y python2.7
@@ -148,11 +148,11 @@ export KCPPFLAGS="-Wno-error"
 
 cd kernel_source
 
-# ========== الخطوة 9: إضافة KernelSU (الطريقة التلقائية) ==========
+# ========== الخطوة 9: إضافة KernelSU ==========
 echo -e "${GREEN}[الخطوة 9] دمج KernelSU...${NC}"
 curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
-# ========== الخطوات 10-16: تعطيل الحماية وإعدادات custom.config ==========
+# ========== الخطوات 10-16: تعطيل الحماية ==========
 echo -e "${GREEN}[الخطوات 10-16] تعطيل جميع حمايات سامسونج...${NC}"
 cat > custom.config << 'EOF'
 # تعطيل RKP و UH
@@ -208,20 +208,19 @@ if [ "$ZRAM_LZ4" = true ]; then
     fi
 fi
 
-# ========== الخطوة 19: إصلاح module signature إذا طلب ==========
+# ========== الخطوة 19: Module signatures ==========
 if [ "$DISABLE_MODULE_SIG" = true ]; then
     echo -e "${GREEN}[الخطوة 19] تعطيل توقيعات الوحدات...${NC}"
     scripts/config --file .config -d CONFIG_MODULE_SIG
     scripts/config --file .config -d CONFIG_MODULE_SIG_FORCE
-    # تعديل kernel/modules.c لتجاوز خطأ magic mismatch
     if [ -f kernel/modules.c ]; then
         sed -i 's/return -ENOEXEC;/\/\/return -ENOEXEC;/' kernel/modules.c
     fi
 fi
 
-# ========== الخطوة 20: إصلاح خطأ -EL إذا طلب ==========
+# ========== الخطوة 20: إصلاح -EL ==========
 if [ "$FIX_EL_FLAG" = true ]; then
-    echo -e "${GREEN}[الخطوة 20] إصلاح خطأ '-EL' في Makefile...${NC}"
+    echo -e "${GREEN}[الخطوة 20] إصلاح خطأ '-EL'...${NC}"
     if grep -q "GCC_TOOLCHAIN_DIR := \$(dir \$(shell which \$(CROSS_COMPILE)elfedit))" Makefile; then
         sed -i '/GCC_TOOLCHAIN_DIR := \$(dir \$(shell which \$(CROSS_COMPILE)elfedit))/d' Makefile
     fi
@@ -230,9 +229,9 @@ if [ "$FIX_EL_FLAG" = true ]; then
     fi
 fi
 
-# ========== الخطوة 21: إصلاح strncpy إذا طلب ==========
+# ========== الخطوة 21: إصلاح strncpy ==========
 if [ "$FIX_STRNCPY" = true ]; then
-    echo -e "${GREEN}[الخطوة 21] تطبيق إصلاح strncpy...${NC}"
+    echo -e "${GREEN}[الخطوة 21] إصلاح strncpy...${NC}"
     scripts/config --file .config -d CONFIG_SECURITY_DEFEX
     git remote add a226 https://github.com/physwizz/a226-R.git
     git fetch a226
@@ -240,7 +239,7 @@ if [ "$FIX_STRNCPY" = true ]; then
     git cherry-pick 3b1bf239a3f17873cb91537cfdaa03173d396b33 || true
 fi
 
-# ========== الخطوة 22: استخدام defconfig الصحيح ==========
+# ========== الخطوة 22: تجهيز defconfig ==========
 echo -e "${GREEN}[الخطوة 22] تجهيز defconfig...${NC}"
 DEFCONFIG="s5e8835-a35xjvxx_defconfig"
 make $DEFCONFIG
@@ -262,7 +261,7 @@ fi
 cp "arch/arm64/boot/$IMAGE_FILE" $HOME/Image
 cd ..
 
-# ========== الخطوة 24: تحضير magiskboot و AnyKernel3 ==========
+# ========== الخطوة 24: تجهيز magiskboot و AnyKernel3 ==========
 echo -e "${GREEN}[الخطوة 24] تجهيز ملف الفلاش...${NC}"
 mkdir -p build_output
 cp $HOME/Image build_output/
