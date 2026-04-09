@@ -1,20 +1,20 @@
-name: Build A35 Kernel (Exynos 1380) with KernelSU
+name: Build A35 Kernel (Exynos) using local script
 
 on:
   workflow_dispatch:
     inputs:
       source_url:
-        description: 'رابط سورس الكيرنال (GitHub, Google Drive, أو رابط مباشر لملف مضغوط)'
+        description: 'رابط سورس الكيرنال (GitHub, Google Drive, أو رابط مباشر)'
         required: true
       boot_img_url:
-        description: 'رابط boot.img الأصلي (اختياري - إذا تركته فارغاً سيُصنع AnyKernel3.zip)'
+        description: 'رابط boot.img الأصلي (اختياري)'
         required: false
       permissive:
-        description: 'نطريقة Permissive SELinux (gabriel / thomas / none)'
+        description: 'Permissive SELinux (gabriel / thomas / none)'
         required: false
         default: 'gabriel'
       zram_lz4:
-        description: 'تغيير ضغط zram إلى lz4 (true/false)'
+        description: 'استخدام lz4 في zram (true/false)'
         required: false
         default: 'true'
 
@@ -22,151 +22,27 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Install dependencies
+      - name: Checkout repository (to get build_a35.sh)
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (for script)
         run: |
           sudo apt update
           sudo apt install -y git-all make gcc python-is-python3 build-essential openssl pip bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler libssl-dev libtinfo5
           pip install gdown
 
-      - name: Download kernel source
+      - name: Make script executable
+        run: chmod +x build_a35.sh
+
+      - name: Run build script
         run: |
-          URL="${{ github.event.inputs.source_url }}"
-          if [[ "$URL" == *drive.google.com* ]]; then
-            FILE_ID=$(echo "$URL" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
-            [ -z "$FILE_ID" ] && FILE_ID=$(echo "$URL" | grep -oP 'id=[a-zA-Z0-9_-]+' | cut -d= -f2)
-            gdown "https://drive.google.com/uc?id=$FILE_ID" -O source.zip
-            unzip -q source.zip -d kernel_source
-          elif [[ "$URL" == *.git ]]; then
-            git clone --depth=1 "$URL" kernel_source
-          else
-            wget -O source.zip "$URL"
-            unzip -q source.zip -d kernel_source
-          fi
-          cd kernel_source
-          if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
-            SUBDIR=$(ls -1); mv $SUBDIR/* ./; rmdir $SUBDIR
-          fi
-          [ ! -f "Makefile" ] && { echo "Makefile not found"; exit 1; }
-          cd ..
-          echo "KERNEL_ROOT=$(pwd)/kernel_source" >> $GITHUB_ENV
-
-      - name: Setup toolchains (clang-r383902 from physwizz)
-        run: |
-          mkdir -p ~/toolchains
-          cd ~/toolchains
-          git clone https://github.com/physwizz/clang-r383902.git
-          cd clang-r383902
-          CLANG_PATH="$PWD/clang/host/linux-x86/clang-r383902"
-          GCC_PATH="$PWD/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-          echo "$CLANG_PATH/bin" >> $GITHUB_PATH
-          echo "$GCC_PATH/bin" >> $GITHUB_PATH
-          echo "TOOLCHAIN_DIR=$PWD" >> $GITHUB_ENV
-          cd -
-
-      - name: Build kernel with KernelSU and disable Samsung security
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          export ARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CC=clang
-          export LD=ld.lld
-          export LLVM=1
-          export LLVM_IAS=1
-          export TARGET_SOC=s5e8835
-          export PLATFORM_VERSION=15
-          export ANDROID_MAJOR_VERSION=v
-          export LTO=none
-          export KCFLAGS="-Wno-error -Wno-typedef-redefinition -fno-stack-protector"
-          export KCPPFLAGS="-Wno-error"
-
-          # Add KernelSU (auto)
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
-
-          # Custom config to disable all Samsung protections
-          cat > custom.config << 'EOF'
-          CONFIG_UH=n CONFIG_UH_RKP=n CONFIG_UH_LKMAUTH=n CONFIG_UH_LKM_BLOCK=n
-          CONFIG_RKP_CFP_JOPP=n CONFIG_RKP_CFP=n CONFIG_RKP_KDP=n CONFIG_RKP_NS_PROT=n CONFIG_RKP_DMAP_PROT=n
-          CONFIG_SECURITY_DEFEX=n CONFIG_PROCA=n CONFIG_FIVE=n
-          CONFIG_TIMA=n CONFIG_TIMA_LKMAUTH=n CONFIG_TIMA_LKM_BLOCK=n CONFIG_TIMA_LKMAUTH_CODE_PROT=n CONFIG_TIMA_LOG=n
-          CONFIG_KNOX_KAP=n CONFIG_KNOX_NCM=n
-          CONFIG_DM_VERITY=n
-          CONFIG_INTEGRITY=n CONFIG_INTEGRITY_SIGNATURE=n CONFIG_INTEGRITY_ASYMMETRIC_KEYS=n CONFIG_INTEGRITY_TRUSTED_KEYRING=n CONFIG_INTEGRITY_AUDIT=n
-          CONFIG_SEC_RESTRICT_ROOTING=n CONFIG_SEC_RESTRICT_SETUID=n CONFIG_SEC_RESTRICT_FORK=n CONFIG_SEC_RESTRICT_ROOTING_LOG=n CONFIG_SECURITY_DSMS=n
-          CONFIG_CC_STACKPROTECTOR_STRONG=n
-          CONFIG_LTO_CLANG=n CONFIG_LTO_CLANG_THIN=n CONFIG_LTO_CLANG_FULL=n CONFIG_LTO_NONE=y
-          CONFIG_DEBUG_INFO_BTF=n
-          CONFIG_MODULE_SIG=n CONFIG_MODULE_SIG_FORCE=n CONFIG_MODULE_SIG_ALL=n CONFIG_MODULE_SIG_SHA512=n
-          CONFIG_MODULE_FORCE_LOAD=y CONFIG_MODULE_UNLOAD=y CONFIG_MODULE_FORCE_UNLOAD=y
-          CONFIG_KERNEL_GZIP=y CONFIG_LOCALVERSION_AUTO=n CONFIG_LOCALVERSION="-KernelSU"
-          CONFIG_CPU_FREQ_GOV_PERFORMANCE=y CONFIG_CPU_FREQ_GOV_POWERSAVE=y CONFIG_CPU_FREQ_GOV_USERSPACE=y CONFIG_CPU_FREQ_GOV_ONDEMAND=y CONFIG_CPU_FREQ_GOV_INTERACTIVE=y CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
-          CONFIG_ZRAM=y CONFIG_ZRAM_WRITEBACK=y CONFIG_ZRAM_MEMORY_TRACKING=y CONFIG_CRYPTO_LZ4=y
-          EOF
-
-          # Permissive SELinux if requested
-          if [[ "${{ github.event.inputs.permissive }}" == "gabriel" ]]; then
-            echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> custom.config
-            echo "CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE=n" >> custom.config
-            echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> custom.config
-          elif [[ "${{ github.event.inputs.permissive }}" == "thomas" ]]; then
-            echo "CONFIG_CMDLINE=\"androidboot.selinux=permissive\"" >> custom.config
-            echo "CONFIG_CMDLINE_EXTEND=y" >> custom.config
-            echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> custom.config
-            echo "CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE=n" >> custom.config
-            echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> custom.config
-          fi
-
-          # ZRAM lz4 if requested
-          if [[ "${{ github.event.inputs.zram_lz4 }}" == "true" ]]; then
-            if [ -f "drivers/block/zram/zram_drv.c" ]; then
-              sed -i 's/"lzo"/"lz4"/g' drivers/block/zram/zram_drv.c
-            fi
-          fi
-
-          DEFCONFIG="s5e8835-a35xjvxx_defconfig"
-          make $DEFCONFIG
-          scripts/kconfig/merge_config.sh .config custom.config
-          scripts/config --file .config -d CONFIG_LTO_CLANG -d CONFIG_LTO_CLANG_THIN -d CONFIG_LTO_CLANG_FULL -e CONFIG_LTO_NONE
-          scripts/config --file .config -d CONFIG_DEBUG_INFO_BTF -d CONFIG_MODULE_SIG -d CONFIG_MODULE_SIG_FORCE
-          scripts/config --file .config --set-str CONFIG_LOCALVERSION "-KernelSU"
-
-          make -j$(nproc) Image.gz
-          cp arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/Image.gz
-
-      - name: Get magiskboot
-        run: |
-          curl -L -o magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk"
-          unzip -j magisk.apk 'lib/x86_64/libmagiskboot.so' -d .
-          mv libmagiskboot.so magiskboot
-          chmod +x magiskboot
-          sudo cp magiskboot /usr/local/bin/
-          rm -f magisk.apk
-
-      - name: Create boot.img or AnyKernel3.zip
-        run: |
-          mkdir -p build_output
-          cp $GITHUB_WORKSPACE/Image.gz build_output/
-          if [ -n "${{ github.event.inputs.boot_img_url }}" ]; then
-            URL="${{ github.event.inputs.boot_img_url }}"
-            if [[ "$URL" == *drive.google.com* ]]; then
-              FILE_ID=$(echo "$URL" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
-              gdown "https://drive.google.com/uc?id=$FILE_ID" -O boot.img
-            else
-              wget -O boot.img "$URL"
-            fi
-            magiskboot unpack boot.img
-            rm -f kernel
-            cp $GITHUB_WORKSPACE/Image.gz kernel
-            magiskboot repack boot.img
-            mv new-boot.img build_output/boot-ksu.img
-            tar -cf build_output/boot-ksu.tar build_output/boot-ksu.img
-          else
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
-            cp $GITHUB_WORKSPACE/Image.gz AnyKernel3/Image
-            cd AnyKernel3
-            zip -r9 ../build_output/AnyKernel3-$(date +%Y%m%d-%H%M%S).zip . -x ".git*" "README.md" "*.zip"
-            cd ..
-          fi
+          ./build_a35.sh \
+            --source-url "${{ github.event.inputs.source_url }}" \
+            --boot-url "${{ github.event.inputs.boot_img_url }}" \
+            --permissive "${{ github.event.inputs.permissive }}" \
+            --zram-lz4 "${{ github.event.inputs.zram_lz4 == 'true' && '--zram-lz4' || '' }}" \
+            --push-github ""   # لا نريد دفع GitHub من Actions هنا
+        continue-on-error: false
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
