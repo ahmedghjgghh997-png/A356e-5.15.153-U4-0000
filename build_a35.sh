@@ -2,6 +2,7 @@
 # ============================================================
 # سكريبت بناء نواة Samsung Galaxy A35 (Exynos 1380) مع KernelSU
 # يعطل جميع حمايات سامسونج، يدعم AnyKernel3 أو boot.img مباشر
+# يتعامل مع ملفات Google Drive (سواء zip أو tar.gz)
 # ============================================================
 set -e
 
@@ -17,7 +18,7 @@ usage() {
 الاستخدام: $0 --source-url <رابط السورس> [خيارات]
 
 خيارات إلزامية:
-  --source-url URL     رابط تحميل سورس الكيرنال (GitHub, Google Drive, أو ملف مضغوط)
+  --source-url URL     رابط تحميل سورس الكيرنال (GitHub, Google Drive, أو رابط مباشر)
 
 خيارات اختيارية:
   --boot-url URL       رابط مباشر لـ boot.img الأصلي (إذا تركته فارغاً، سيُصنع AnyKernel3.zip)
@@ -69,11 +70,10 @@ done
 
 [ -z "$SOURCE_URL" ] && { echo -e "${RED}خطأ: يجب تحديد --source-url${NC}"; usage; }
 
-# ========== الخطوة 1-5: إعداد نظام لينكس وتبعيات (بدون git-all) ==========
+# ========== الخطوة 1-5: إعداد نظام لينكس وتبعيات ==========
 echo -e "${GREEN}[الخطوات 1-5] تثبيت التبعيات الأساسية...${NC}"
 sudo apt update
 sudo apt upgrade -y
-# تم تعديل السطر التالي: استبدلنا git-all بـ git
 sudo apt install -y git make gcc
 sudo apt install -y python-is-python3 build-essential openssl pip
 pip install virtualenv
@@ -92,27 +92,65 @@ export PATH="$HOME/.bin:$PATH"
 curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
 chmod a+rx ~/.bin/repo
 
-# ========== الخطوة 6: تنزيل سورس الكيرنال ==========
+# ========== الخطوة 6: تنزيل السورس وفك الضغط تلقائياً ==========
 echo -e "${GREEN}[الخطوة 6] تنزيل السورس من: $SOURCE_URL${NC}"
 mkdir -p kernel_source && cd kernel_source
+
+# دالة لتحويل رابط Google Drive إلى رابط مباشر
+get_gdrive_direct() {
+    local url="$1"
+    local file_id=$(echo "$url" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
+    [ -z "$file_id" ] && file_id=$(echo "$url" | grep -oP 'id=[a-zA-Z0-9_-]+' | cut -d= -f2)
+    echo "https://drive.google.com/uc?export=download&id=$file_id"
+}
+
+# تنزيل الملف
 if [[ "$SOURCE_URL" == *drive.google.com* ]]; then
-    FILE_ID=$(echo "$SOURCE_URL" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
-    [ -z "$FILE_ID" ] && FILE_ID=$(echo "$SOURCE_URL" | grep -oP 'id=[a-zA-Z0-9_-]+' | cut -d= -f2)
-    gdown "https://drive.google.com/uc?id=$FILE_ID" -O source.zip
-    unzip -q source.zip
-    rm source.zip
+    DIRECT_URL=$(get_gdrive_direct "$SOURCE_URL")
+    gdown --fuzzy "$DIRECT_URL" -O source.file
 elif [[ "$SOURCE_URL" == *.git ]]; then
     git clone --depth=1 "$SOURCE_URL" .
+    cd ..
+    echo "KERNEL_SOURCE_CLONED=true"
+    cd kernel_source
 else
-    wget -O source.zip "$SOURCE_URL"
-    unzip -q source.zip
-    rm source.zip
+    wget -O source.file "$SOURCE_URL"
 fi
-# إذا كان السورس داخل مجلد فرعي واحد، ننقله للأعلى
-if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
-    SUBDIR=$(ls -1)
-    mv $SUBDIR/* ./
-    rmdir $SUBDIR
+
+# فك الضغط حسب نوع الملف (إذا لم يكن مستودع git)
+if [ ! -f "../KERNEL_SOURCE_CLONED" ]; then
+    FILE_TYPE=$(file -b --mime-type source.file)
+    echo "نوع الملف: $FILE_TYPE"
+    case "$FILE_TYPE" in
+        application/zip)
+            unzip -q source.file
+            ;;
+        application/x-tar|application/x-gzip|application/gzip)
+            tar -xf source.file
+            ;;
+        application/x-xz)
+            tar -xJf source.file
+            ;;
+        application/x-bzip2)
+            tar -xjf source.file
+            ;;
+        *)
+            # محاولة tar كحل أخير
+            if tar -xf source.file 2>/dev/null; then
+                echo "تم فك الضغط باستخدام tar"
+            else
+                echo -e "${RED}خطأ: لا يمكن فك ضغط الملف. تأكد من صيغته.${NC}"
+                exit 1
+            fi
+            ;;
+    esac
+    rm source.file
+    # إذا كان السورس داخل مجلد فرعي واحد، ننقله للأعلى
+    if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
+        SUBDIR=$(ls -1)
+        mv $SUBDIR/* ./
+        rmdir $SUBDIR
+    fi
 fi
 [ ! -f "Makefile" ] && { echo -e "${RED}خطأ: Makefile غير موجود في السورس${NC}"; exit 1; }
 cd ..
@@ -276,8 +314,8 @@ rm -f magisk.apk
 if [ -n "$BOOT_URL" ]; then
     echo "تحميل boot.img من $BOOT_URL ..."
     if [[ "$BOOT_URL" == *drive.google.com* ]]; then
-        FILE_ID=$(echo "$BOOT_URL" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
-        gdown "https://drive.google.com/uc?id=$FILE_ID" -O boot.img
+        DIRECT_URL=$(get_gdrive_direct "$BOOT_URL")
+        gdown --fuzzy "$DIRECT_URL" -O boot.img
     else
         wget -O boot.img "$BOOT_URL"
     fi
