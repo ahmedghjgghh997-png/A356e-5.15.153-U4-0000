@@ -2,7 +2,7 @@
 # ============================================================
 # سكريبت بناء نواة Samsung Galaxy A35 (Exynos 1380) مع KernelSU
 # يعطل جميع حمايات سامسونج، يدعم AnyKernel3 أو boot.img مباشر
-# يتعامل مع ملفات Google Drive (سواء zip أو tar.gz) بأمان
+# يتعامل مع روابط Google Drive و git و الملفات المضغوطة
 # ============================================================
 set -e
 
@@ -70,37 +70,18 @@ done
 
 [ -z "$SOURCE_URL" ] && { echo -e "${RED}خطأ: يجب تحديد --source-url${NC}"; usage; }
 
-# ========== الخطوة 1-5: إعداد نظام لينكس وتبعيات ==========
-echo -e "${GREEN}[الخطوات 1-5] تثبيت التبعيات الأساسية...${NC}"
+# ========== 1. تثبيت التبعيات ==========
+echo -e "${GREEN}[1/8] تثبيت التبعيات...${NC}"
 sudo apt update
-sudo apt upgrade -y
-sudo apt install -y git make gcc
-sudo apt install -y python-is-python3 build-essential openssl pip
-pip install virtualenv
-sudo apt install -y python3-virtualenv
-sudo add-apt-repository -y ppa:deadsnakes/ppa
-sudo apt update
-sudo apt install -y python2.7
-sudo apt install -y libssl-dev
-sudo apt-get install -y libtinfo5
-sudo apt install -y bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler
+sudo apt install -y git make gcc python-is-python3 build-essential openssl pip bc bison flex cpio kmod wget curl unzip xz-utils device-tree-compiler libssl-dev libtinfo5
 pip install gdown
 
-# إعداد repo (أداة Google)
-mkdir -p ~/.bin
-export PATH="$HOME/.bin:$PATH"
-curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
-chmod a+rx ~/.bin/repo
-
-# ========== الخطوة 6: تنزيل السورس وفك الضغط بأمان ==========
-echo -e "${GREEN}[الخطوة 6] تنزيل السورس من: $SOURCE_URL${NC}"
-
-# حذف أي مجلد kernel_source قديم لتجنب التراكم
+# ========== 2. تحميل السورس وفك الضغط ==========
+echo -e "${GREEN}[2/8] تحميل السورس من: $SOURCE_URL${NC}"
 rm -rf kernel_source
 mkdir -p kernel_source
 cd kernel_source
 
-# دالة لتحويل رابط Google Drive إلى رابط مباشر
 get_gdrive_direct() {
     local url="$1"
     local file_id=$(echo "$url" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
@@ -108,93 +89,63 @@ get_gdrive_direct() {
     echo "https://drive.google.com/uc?export=download&id=$file_id"
 }
 
-# تنزيل الملف
-DOWNLOAD_SUCCESS=false
 if [[ "$SOURCE_URL" == *drive.google.com* ]]; then
     DIRECT_URL=$(get_gdrive_direct "$SOURCE_URL")
-    echo "تحميل من Google Drive..."
-    gdown --fuzzy "$DIRECT_URL" -O source.file && DOWNLOAD_SUCCESS=true
+    gdown --fuzzy "$DIRECT_URL" -O source.file
 elif [[ "$SOURCE_URL" == *.git ]]; then
-    echo "استنساخ من git..."
     git clone --depth=1 "$SOURCE_URL" .
-    DOWNLOAD_SUCCESS=true
+    cd ..
+    echo "KERNEL_SOURCE_CLONED=1" >> /tmp/kernel_build_env
+    cd kernel_source
 else
-    echo "تحميل من رابط مباشر..."
-    wget -O source.file "$SOURCE_URL" && DOWNLOAD_SUCCESS=true
+    wget -O source.file "$SOURCE_URL"
 fi
 
-if [ "$DOWNLOAD_SUCCESS" = false ]; then
-    echo -e "${RED}خطأ: فشل تحميل السورس${NC}"
-    exit 1
-fi
-
-# فك الضغط إذا كان الملف ليس مستودع git
 if [[ "$SOURCE_URL" != *.git ]]; then
-    FILE_TYPE=$(file -b --mime-type source.file)
-    echo "نوع الملف: $FILE_TYPE"
-    
-    case "$FILE_TYPE" in
-        application/zip)
-            echo "فك ضغط zip..."
-            unzip -q source.file
-            ;;
-        application/x-tar|application/x-gzip|application/gzip)
-            echo "فك ضغط tar.gz..."
-            tar -xzf source.file
-            ;;
-        application/x-xz)
-            echo "فك ضغط tar.xz..."
-            tar -xJf source.file
-            ;;
-        application/x-bzip2)
-            echo "فك ضغط tar.bz2..."
-            tar -xjf source.file
-            ;;
-        *)
-            echo -e "${YELLOW}نوع ملف غير معروف، محاولة tar كحل أخير...${NC}"
-            if tar -xf source.file 2>/dev/null; then
-                echo "تم فك الضغط باستخدام tar"
-            else
-                echo -e "${RED}خطأ: لا يمكن فك ضغط الملف. تأكد من صيغته.${NC}"
-                exit 1
-            fi
-            ;;
+    file_type=$(file -b --mime-type source.file)
+    echo "نوع الملف: $file_type"
+    case "$file_type" in
+        application/zip) unzip -q source.file ;;
+        application/x-tar|application/x-gzip|application/gzip) tar -xzf source.file ;;
+        application/x-xz) tar -xJf source.file ;;
+        application/x-bzip2) tar -xjf source.file ;;
+        *) tar -xf source.file 2>/dev/null || { echo -e "${RED}فشل فك الضغط${NC}"; exit 1; } ;;
     esac
     rm source.file
-    
-    # إذا كان السورس داخل مجلد فرعي واحد، ننقله للأعلى
-    if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
-        SUBDIR=$(ls -1)
-        echo "نقل محتويات المجلد $SUBDIR إلى الأعلى..."
-        mv $SUBDIR/* ./
-        rmdir $SUBDIR
-    fi
 fi
 
-# التأكد من وجود Makefile
+if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
+    subdir=$(ls -1)
+    mv $subdir/* ./
+    rmdir $subdir
+fi
+
 if [ ! -f "Makefile" ]; then
-    echo -e "${RED}خطأ: Makefile غير موجود في السورس. تأكد من صحة الرابط.${NC}"
+    echo -e "${RED}خطأ: Makefile غير موجود في السورس${NC}"
     exit 1
 fi
-
-echo -e "${GREEN}تم تحضير السورس بنجاح في $(pwd)${NC}"
 cd ..
 
-# ========== الخطوة 7: إضافة toolchains ==========
-echo -e "${GREEN}[الخطوة 7] تحميل سلاسل الأدوات (clang-r383902)...${NC}"
-mkdir -p ~/toolchains
-cd ~/toolchains
-if [ ! -d "clang-r383902" ]; then
-    git clone https://github.com/physwizz/clang-r383902.git
+# ========== 3. تثبيت أداة الترجمة (clang-r450784e) مع التصحيح ==========
+echo -e "${GREEN}[3/8] تثبيت أداة الترجمة clang-r450784e...${NC}"
+mkdir -p ~/tc
+cd ~/tc
+if [ ! -f clang-r450784e.tar.gz ]; then
+    wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r450784e.tar.gz
+    tar -xf clang-r450784e.tar.gz
+    mv clang-r450784e clang
 fi
-cd clang-r383902
-export CLANG_PATH="$PWD/clang/host/linux-x86/clang-r383902"
-export GCC_PATH="$PWD/gcc/linux-x86/aarch64/aarch64-linux-android-4.9"
-export PATH="$CLANG_PATH/bin:$GCC_PATH/bin:$PATH"
+if [ ! -f arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz ]; then
+    wget -q https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+    tar -xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+    # التصحيح: إزالة النقطة الزائدة قبل gcc
+    mv arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu gcc
+fi
+export PATH="$HOME/tc/clang/bin:$HOME/tc/gcc/bin:$PATH"
 cd -
 
-# ========== الخطوة 8: إعداد متغيرات البناء ==========
-echo -e "${GREEN}[الخطوة 8] إعداد متغيرات البناء...${NC}"
+# ========== 4. إعداد متغيرات البناء ==========
+echo -e "${GREEN}[4/8] إعداد متغيرات البناء...${NC}"
 export ARCH=arm64
 export CROSS_COMPILE="aarch64-linux-android-"
 export CLANG_TRIPLE="aarch64-linux-gnu-"
@@ -209,19 +160,14 @@ export LTO=none
 export KCFLAGS="-Wno-error -Wno-typedef-redefinition -fno-stack-protector"
 export KCPPFLAGS="-Wno-error"
 
-# التأكد من وجود مجلد kernel_source قبل الدخول
-if [ ! -d "kernel_source" ]; then
-    echo -e "${RED}خطأ: مجلد kernel_source غير موجود!${NC}"
-    exit 1
-fi
 cd kernel_source
 
-# ========== الخطوة 9: إضافة KernelSU ==========
-echo -e "${GREEN}[الخطوة 9] دمج KernelSU...${NC}"
+# ========== 5. إضافة KernelSU ==========
+echo -e "${GREEN}[5/8] إضافة KernelSU...${NC}"
 curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
-# ========== الخطوات 10-16: تعطيل الحماية ==========
-echo -e "${GREEN}[الخطوات 10-16] تعطيل جميع حمايات سامسونج...${NC}"
+# ========== 6. تعطيل الحماية وإعداد custom.config ==========
+echo -e "${GREEN}[6/8] تعطيل جميع حمايات سامسونج...${NC}"
 cat > custom.config << 'EOF'
 # تعطيل RKP و UH
 CONFIG_UH=n CONFIG_UH_RKP=n CONFIG_UH_LKMAUTH=n CONFIG_UH_LKM_BLOCK=n
@@ -253,14 +199,14 @@ CONFIG_CPU_FREQ_GOV_PERFORMANCE=y CONFIG_CPU_FREQ_GOV_POWERSAVE=y CONFIG_CPU_FRE
 CONFIG_ZRAM=y CONFIG_ZRAM_WRITEBACK=y CONFIG_ZRAM_MEMORY_TRACKING=y CONFIG_CRYPTO_LZ4=y
 EOF
 
-# ========== الخطوة 17: Permissive SELinux ==========
+# Permissive SELinux
 if [[ "$PERMISSIVE" == "gabriel" ]]; then
-    echo -e "${GREEN}[الخطوة 17] تطبيق permissive SELinux (طريقة Gabriel)...${NC}"
+    echo -e "${GREEN}تطبيق permissive SELinux (طريقة Gabriel)...${NC}"
     echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> custom.config
     echo "CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE=n" >> custom.config
     echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> custom.config
 elif [[ "$PERMISSIVE" == "thomas" ]]; then
-    echo -e "${GREEN}[الخطوة 17] تطبيق permissive SELinux (طريقة Thomas)...${NC}"
+    echo -e "${GREEN}تطبيق permissive SELinux (طريقة Thomas)...${NC}"
     echo "CONFIG_CMDLINE=\"androidboot.selinux=permissive\"" >> custom.config
     echo "CONFIG_CMDLINE_EXTEND=y" >> custom.config
     echo "CONFIG_SECURITY_SELINUX_DEVELOP=y" >> custom.config
@@ -268,17 +214,17 @@ elif [[ "$PERMISSIVE" == "thomas" ]]; then
     echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> custom.config
 fi
 
-# ========== الخطوة 18: ZRAM lz4 ==========
+# ZRAM lz4
 if [ "$ZRAM_LZ4" = true ]; then
-    echo -e "${GREEN}[الخطوة 18] تغيير ضغط zram إلى lz4...${NC}"
+    echo -e "${GREEN}تغيير ضغط zram إلى lz4...${NC}"
     if [ -f "drivers/block/zram/zram_drv.c" ]; then
         sed -i 's/"lzo"/"lz4"/g' drivers/block/zram/zram_drv.c
     fi
 fi
 
-# ========== الخطوة 19: Module signatures ==========
+# تعطيل توقيعات الوحدات
 if [ "$DISABLE_MODULE_SIG" = true ]; then
-    echo -e "${GREEN}[الخطوة 19] تعطيل توقيعات الوحدات...${NC}"
+    echo -e "${GREEN}تعطيل توقيعات الوحدات...${NC}"
     scripts/config --file .config -d CONFIG_MODULE_SIG
     scripts/config --file .config -d CONFIG_MODULE_SIG_FORCE
     if [ -f kernel/modules.c ]; then
@@ -286,9 +232,9 @@ if [ "$DISABLE_MODULE_SIG" = true ]; then
     fi
 fi
 
-# ========== الخطوة 20: إصلاح -EL ==========
+# إصلاح خطأ -EL
 if [ "$FIX_EL_FLAG" = true ]; then
-    echo -e "${GREEN}[الخطوة 20] إصلاح خطأ '-EL'...${NC}"
+    echo -e "${GREEN}إصلاح خطأ '-EL'...${NC}"
     if grep -q "GCC_TOOLCHAIN_DIR := \$(dir \$(shell which \$(CROSS_COMPILE)elfedit))" Makefile; then
         sed -i '/GCC_TOOLCHAIN_DIR := \$(dir \$(shell which \$(CROSS_COMPILE)elfedit))/d' Makefile
     fi
@@ -297,9 +243,9 @@ if [ "$FIX_EL_FLAG" = true ]; then
     fi
 fi
 
-# ========== الخطوة 21: إصلاح strncpy ==========
+# إصلاح strncpy
 if [ "$FIX_STRNCPY" = true ]; then
-    echo -e "${GREEN}[الخطوة 21] إصلاح strncpy...${NC}"
+    echo -e "${GREEN}إصلاح strncpy...${NC}"
     scripts/config --file .config -d CONFIG_SECURITY_DEFEX
     git remote add a226 https://github.com/physwizz/a226-R.git
     git fetch a226
@@ -307,8 +253,8 @@ if [ "$FIX_STRNCPY" = true ]; then
     git cherry-pick 3b1bf239a3f17873cb91537cfdaa03173d396b33 || true
 fi
 
-# ========== الخطوة 22: تجهيز defconfig ==========
-echo -e "${GREEN}[الخطوة 22] تجهيز defconfig...${NC}"
+# ========== 7. تجهيز defconfig والبناء ==========
+echo -e "${GREEN}[7/8] تجهيز defconfig وبناء الكيرنال...${NC}"
 DEFCONFIG="s5e8835-a35xjvxx_defconfig"
 make $DEFCONFIG
 scripts/kconfig/merge_config.sh .config custom.config
@@ -316,21 +262,23 @@ scripts/config --file .config -d CONFIG_LTO_CLANG -d CONFIG_LTO_CLANG_THIN -d CO
 scripts/config --file .config -d CONFIG_DEBUG_INFO_BTF -d CONFIG_MODULE_SIG -d CONFIG_MODULE_SIG_FORCE
 scripts/config --file .config --set-str CONFIG_LOCALVERSION "-KernelSU"
 
-# ========== الخطوة 23: بناء الكيرنال ==========
-echo -e "${GREEN}[الخطوة 23] بناء الكيرنال (قد يستغرق وقتاً)...${NC}"
 if [ "$IMAGE_GZ" = true ]; then
     make -j$(nproc) Image.gz
-    IMAGE_FILE="Image.gz"
+    IMG="Image.gz"
 else
     make -j$(nproc) Image
-    IMAGE_FILE="Image"
+    IMG="Image"
 fi
-[ ! -f "arch/arm64/boot/$IMAGE_FILE" ] && { echo -e "${RED}فشل البناء${NC}"; exit 1; }
-cp "arch/arm64/boot/$IMAGE_FILE" $HOME/Image
+
+if [ ! -f "arch/arm64/boot/$IMG" ]; then
+    echo -e "${RED}فشل البناء${NC}"
+    exit 1
+fi
+cp "arch/arm64/boot/$IMG" $HOME/Image
 cd ..
 
-# ========== الخطوة 24: تجهيز magiskboot و AnyKernel3 ==========
-echo -e "${GREEN}[الخطوة 24] تجهيز ملف الفلاش...${NC}"
+# ========== 8. تحضير boot.img أو AnyKernel3 ==========
+echo -e "${GREEN}[8/8] تجهيز ملف الفلاش...${NC}"
 mkdir -p build_output
 cp $HOME/Image build_output/
 
@@ -344,8 +292,8 @@ rm -f magisk.apk
 if [ -n "$BOOT_URL" ]; then
     echo "تحميل boot.img من $BOOT_URL ..."
     if [[ "$BOOT_URL" == *drive.google.com* ]]; then
-        DIRECT_URL=$(get_gdrive_direct "$BOOT_URL")
-        gdown --fuzzy "$DIRECT_URL" -O boot.img
+        file_id=$(echo "$BOOT_URL" | grep -oP '(?<=/d/)[a-zA-Z0-9_-]+' | head -1)
+        gdown "https://drive.google.com/uc?id=$file_id" -O boot.img
     else
         wget -O boot.img "$BOOT_URL"
     fi
@@ -366,9 +314,9 @@ else
     echo -e "${GREEN}تم إنشاء AnyKernel3.zip في build_output/${NC}"
 fi
 
-# ========== الخطوة 25-33: رفع السورس إلى GitHub (اختياري) ==========
+# رفع السورس إلى GitHub إذا طلب
 if [ -n "$PUSH_GITHUB_URL" ]; then
-    echo -e "${GREEN}[الخطوات 25-33] رفع السورس المعدل إلى $PUSH_GITHUB_URL ...${NC}"
+    echo -e "${GREEN}رفع السورس المعدل إلى $PUSH_GITHUB_URL ...${NC}"
     cd kernel_source
     git init
     git add .
