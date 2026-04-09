@@ -2,7 +2,7 @@
 # ============================================================
 # سكريبت بناء نواة Samsung Galaxy A35 (Exynos 1380) مع KernelSU
 # يعطل جميع حمايات سامسونج، يدعم AnyKernel3 أو boot.img مباشر
-# يتعامل مع ملفات Google Drive (سواء zip أو tar.gz)
+# يتعامل مع ملفات Google Drive (سواء zip أو tar.gz) بأمان
 # ============================================================
 set -e
 
@@ -92,9 +92,13 @@ export PATH="$HOME/.bin:$PATH"
 curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
 chmod a+rx ~/.bin/repo
 
-# ========== الخطوة 6: تنزيل السورس وفك الضغط تلقائياً ==========
+# ========== الخطوة 6: تنزيل السورس وفك الضغط بأمان ==========
 echo -e "${GREEN}[الخطوة 6] تنزيل السورس من: $SOURCE_URL${NC}"
-mkdir -p kernel_source && cd kernel_source
+
+# حذف أي مجلد kernel_source قديم لتجنب التراكم
+rm -rf kernel_source
+mkdir -p kernel_source
+cd kernel_source
 
 # دالة لتحويل رابط Google Drive إلى رابط مباشر
 get_gdrive_direct() {
@@ -105,37 +109,49 @@ get_gdrive_direct() {
 }
 
 # تنزيل الملف
+DOWNLOAD_SUCCESS=false
 if [[ "$SOURCE_URL" == *drive.google.com* ]]; then
     DIRECT_URL=$(get_gdrive_direct "$SOURCE_URL")
-    gdown --fuzzy "$DIRECT_URL" -O source.file
+    echo "تحميل من Google Drive..."
+    gdown --fuzzy "$DIRECT_URL" -O source.file && DOWNLOAD_SUCCESS=true
 elif [[ "$SOURCE_URL" == *.git ]]; then
+    echo "استنساخ من git..."
     git clone --depth=1 "$SOURCE_URL" .
-    cd ..
-    echo "KERNEL_SOURCE_CLONED=true"
-    cd kernel_source
+    DOWNLOAD_SUCCESS=true
 else
-    wget -O source.file "$SOURCE_URL"
+    echo "تحميل من رابط مباشر..."
+    wget -O source.file "$SOURCE_URL" && DOWNLOAD_SUCCESS=true
 fi
 
-# فك الضغط حسب نوع الملف (إذا لم يكن مستودع git)
-if [ ! -f "../KERNEL_SOURCE_CLONED" ]; then
+if [ "$DOWNLOAD_SUCCESS" = false ]; then
+    echo -e "${RED}خطأ: فشل تحميل السورس${NC}"
+    exit 1
+fi
+
+# فك الضغط إذا كان الملف ليس مستودع git
+if [[ "$SOURCE_URL" != *.git ]]; then
     FILE_TYPE=$(file -b --mime-type source.file)
     echo "نوع الملف: $FILE_TYPE"
+    
     case "$FILE_TYPE" in
         application/zip)
+            echo "فك ضغط zip..."
             unzip -q source.file
             ;;
         application/x-tar|application/x-gzip|application/gzip)
-            tar -xf source.file
+            echo "فك ضغط tar.gz..."
+            tar -xzf source.file
             ;;
         application/x-xz)
+            echo "فك ضغط tar.xz..."
             tar -xJf source.file
             ;;
         application/x-bzip2)
+            echo "فك ضغط tar.bz2..."
             tar -xjf source.file
             ;;
         *)
-            # محاولة tar كحل أخير
+            echo -e "${YELLOW}نوع ملف غير معروف، محاولة tar كحل أخير...${NC}"
             if tar -xf source.file 2>/dev/null; then
                 echo "تم فك الضغط باستخدام tar"
             else
@@ -145,14 +161,23 @@ if [ ! -f "../KERNEL_SOURCE_CLONED" ]; then
             ;;
     esac
     rm source.file
+    
     # إذا كان السورس داخل مجلد فرعي واحد، ننقله للأعلى
     if [ $(ls -1 | wc -l) -eq 1 ] && [ -d $(ls -1) ]; then
         SUBDIR=$(ls -1)
+        echo "نقل محتويات المجلد $SUBDIR إلى الأعلى..."
         mv $SUBDIR/* ./
         rmdir $SUBDIR
     fi
 fi
-[ ! -f "Makefile" ] && { echo -e "${RED}خطأ: Makefile غير موجود في السورس${NC}"; exit 1; }
+
+# التأكد من وجود Makefile
+if [ ! -f "Makefile" ]; then
+    echo -e "${RED}خطأ: Makefile غير موجود في السورس. تأكد من صحة الرابط.${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}تم تحضير السورس بنجاح في $(pwd)${NC}"
 cd ..
 
 # ========== الخطوة 7: إضافة toolchains ==========
@@ -184,6 +209,11 @@ export LTO=none
 export KCFLAGS="-Wno-error -Wno-typedef-redefinition -fno-stack-protector"
 export KCPPFLAGS="-Wno-error"
 
+# التأكد من وجود مجلد kernel_source قبل الدخول
+if [ ! -d "kernel_source" ]; then
+    echo -e "${RED}خطأ: مجلد kernel_source غير موجود!${NC}"
+    exit 1
+fi
 cd kernel_source
 
 # ========== الخطوة 9: إضافة KernelSU ==========
